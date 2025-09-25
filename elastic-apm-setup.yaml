@@ -1,0 +1,408 @@
+# ============================================================================
+# 📊 ELASTIC APM MONITORING - CONEXÃO DE SORTE MONITORING INFRASTRUCTURE
+# ============================================================================
+# Configuração completa do Elastic APM para monitoramento avançado de
+# performance dos microsserviços conexao-de-sorte-backend-{nome}
+# ============================================================================
+
+# ========================================
+# 🏗️ ELASTICSEARCH CLUSTER
+# ========================================
+apiVersion: elasticsearch.k8s.elastic.co/v1
+kind: Elasticsearch
+metadata:
+  name: conexao-de-sorte-elasticsearch
+  namespace: elastic-system
+  labels:
+    app.kubernetes.io/name: elasticsearch
+    app.kubernetes.io/part-of: conexao-de-sorte-monitoring
+spec:
+  version: 8.11.0
+  nodeSets:
+  - name: default
+    count: 3
+    config:
+      node.store.allow_mmap: false
+      # Configurações de performance
+      indices.memory.index_buffer_size: 20%
+      indices.memory.min_index_buffer_size: 96mb
+      # Configurações de cluster
+      cluster.routing.allocation.disk.threshold_enabled: true
+      cluster.routing.allocation.disk.watermark.low: 85%
+      cluster.routing.allocation.disk.watermark.high: 90%
+      cluster.routing.allocation.disk.watermark.flood_stage: 95%
+    podTemplate:
+      metadata:
+        labels:
+          app.kubernetes.io/name: elasticsearch
+          app.kubernetes.io/part-of: conexao-de-sorte-monitoring
+      spec:
+        containers:
+        - name: elasticsearch
+          resources:
+            requests:
+              memory: 2Gi
+              cpu: 1000m
+            limits:
+              memory: 4Gi
+              cpu: 2000m
+          env:
+          - name: ES_JAVA_OPTS
+            value: "-Xms2g -Xmx2g"
+    volumeClaimTemplates:
+    - metadata:
+        name: elasticsearch-data
+      spec:
+        accessModes:
+        - ReadWriteOnce
+        resources:
+          requests:
+            storage: 50Gi
+        storageClassName: fast-ssd
+
+---
+# ========================================
+# 📊 KIBANA DASHBOARD
+# ========================================
+apiVersion: kibana.k8s.elastic.co/v1
+kind: Kibana
+metadata:
+  name: conexao-de-sorte-kibana
+  namespace: elastic-system
+  labels:
+    app.kubernetes.io/name: kibana
+    app.kubernetes.io/part-of: conexao-de-sorte-monitoring
+spec:
+  version: 8.11.0
+  count: 2
+  elasticsearchRef:
+    name: conexao-de-sorte-elasticsearch
+  config:
+    server.publicBaseUrl: "https://kibana.conexaodesorte.com"
+    xpack.fleet.agents.elasticsearch.hosts: ["https://conexao-de-sorte-elasticsearch-es-http.elastic-system.svc:9200"]
+    xpack.fleet.agents.fleet_server.hosts: ["https://fleet-server.elastic-system.svc:8220"]
+    # Configurações de APM
+    apm_oss.enabled: true
+    apm_oss.indexPattern: "apm-*"
+    # Configurações de segurança
+    xpack.security.enabled: true
+    xpack.encryptedSavedObjects.encryptionKey: "conexao-de-sorte-kibana-encryption-key-32-chars"
+  podTemplate:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kibana
+        app.kubernetes.io/part-of: conexao-de-sorte-monitoring
+    spec:
+      containers:
+      - name: kibana
+        resources:
+          requests:
+            memory: 1Gi
+            cpu: 500m
+          limits:
+            memory: 2Gi
+            cpu: 1000m
+
+---
+# ========================================
+# 🔍 APM SERVER
+# ========================================
+apiVersion: apm.k8s.elastic.co/v1
+kind: ApmServer
+metadata:
+  name: conexao-de-sorte-apm-server
+  namespace: elastic-system
+  labels:
+    app.kubernetes.io/name: apm-server
+    app.kubernetes.io/part-of: conexao-de-sorte-monitoring
+spec:
+  version: 8.11.0
+  count: 2
+  elasticsearchRef:
+    name: conexao-de-sorte-elasticsearch
+  config:
+    # Configurações de performance
+    apm-server:
+      host: "0.0.0.0:8200"
+      max_request_size: 1048576
+      read_timeout: 30s
+      write_timeout: 30s
+      shutdown_timeout: 5s
+      # Configurações de sampling
+      sampling:
+        keep_unsampled: false
+        tail_sampling:
+          enabled: true
+          interval: 1s
+          policies:
+          - sample_rate: 0.1  # 10% sampling rate
+          - sample_rate: 1.0  # 100% para errors
+            trace.outcome: "failure"
+    # Configurações de output
+    output.elasticsearch:
+      hosts: ["https://conexao-de-sorte-elasticsearch-es-http.elastic-system.svc:9200"]
+      protocol: "https"
+      # Configurações de índices
+      indices:
+      - index: "apm-%{[observer.version]}-sourcemap"
+        when.contains:
+          processor.event: "sourcemap"
+      - index: "apm-%{[observer.version]}-error-%{+yyyy.MM.dd}"
+        when.contains:
+          processor.event: "error"
+      - index: "apm-%{[observer.version]}-transaction-%{+yyyy.MM.dd}"
+        when.contains:
+          processor.event: "transaction"
+      - index: "apm-%{[observer.version]}-span-%{+yyyy.MM.dd}"
+        when.contains:
+          processor.event: "span"
+      - index: "apm-%{[observer.version]}-metric-%{+yyyy.MM.dd}"
+        when.contains:
+          processor.event: "metric"
+  podTemplate:
+    metadata:
+      labels:
+        app.kubernetes.io/name: apm-server
+        app.kubernetes.io/part-of: conexao-de-sorte-monitoring
+    spec:
+      containers:
+      - name: apm-server
+        resources:
+          requests:
+            memory: 512Mi
+            cpu: 200m
+          limits:
+            memory: 1Gi
+            cpu: 500m
+
+---
+# ========================================
+# 🔧 APM AGENT CONFIGURATION
+# ========================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: conexao-de-sorte-apm-config
+  namespace: default
+  labels:
+    app.kubernetes.io/name: apm-config
+    app.kubernetes.io/part-of: conexao-de-sorte-monitoring
+data:
+  # Configuração Java APM Agent
+  elastic-apm-agent.properties: |
+    # Server configuration
+    server_url=http://conexao-de-sorte-apm-server-apm-http.elastic-system.svc:8200
+    
+    # Service configuration
+    service_name=conexao-de-sorte-${SERVICE_NAME}
+    service_version=${SERVICE_VERSION:1.0.0}
+    environment=${ENVIRONMENT:production}
+    
+    # Application configuration
+    application_packages=br.tec.facilitaservicos
+    
+    # Sampling configuration
+    transaction_sample_rate=0.1
+    
+    # Capture configuration
+    capture_body=all
+    capture_headers=true
+    
+    # Stack trace configuration
+    stack_trace_limit=50
+    span_frames_min_duration=5ms
+    
+    # Profiling configuration
+    profiling_inferred_spans_enabled=true
+    profiling_inferred_spans_sampling_interval=50ms
+    profiling_inferred_spans_min_duration=500ms
+    
+    # Metrics configuration
+    metrics_interval=30s
+    disable_metrics=system.cpu.total.norm.pct,system.memory.usage,system.memory.actual.free,system.process.memory.size
+    
+    # Logging configuration
+    log_level=INFO
+    log_file=/app/logs/apm-agent.log
+    
+    # Custom tags
+    global_labels=project=conexao-de-sorte,team=backend,domain=lottery
+
+  # Script de inicialização com APM
+  apm-init.sh: |
+    #!/bin/bash
+    
+    # Download do APM Agent se não existir
+    APM_AGENT_VERSION="1.45.0"
+    APM_AGENT_JAR="/app/elastic-apm-agent.jar"
+    
+    if [ ! -f "$APM_AGENT_JAR" ]; then
+        echo "📥 Baixando Elastic APM Agent $APM_AGENT_VERSION..."
+        curl -L -o "$APM_AGENT_JAR" \
+            "https://repo1.maven.org/maven2/co/elastic/apm/elastic-apm-agent/$APM_AGENT_VERSION/elastic-apm-agent-$APM_AGENT_VERSION.jar"
+    fi
+    
+    # Configurar variáveis de ambiente APM
+    export ELASTIC_APM_SERVICE_NAME="conexao-de-sorte-${SERVICE_NAME}"
+    export ELASTIC_APM_SERVER_URL="http://conexao-de-sorte-apm-server-apm-http.elastic-system.svc:8200"
+    export ELASTIC_APM_ENVIRONMENT="${ENVIRONMENT:-production}"
+    export ELASTIC_APM_APPLICATION_PACKAGES="br.tec.facilitaservicos"
+    
+    # Adicionar APM agent ao JAVA_OPTS
+    export JAVA_OPTS="$JAVA_OPTS -javaagent:$APM_AGENT_JAR -Delastic.apm.config_file=/app/config/elastic-apm-agent.properties"
+    
+    echo "🔍 APM Agent configurado para serviço: $ELASTIC_APM_SERVICE_NAME"
+    echo "📊 APM Server: $ELASTIC_APM_SERVER_URL"
+    
+    # Executar aplicação original
+    exec "$@"
+
+---
+# ========================================
+# 📈 METRICBEAT PARA MÉTRICAS DE SISTEMA
+# ========================================
+apiVersion: beat.k8s.elastic.co/v1beta1
+kind: Beat
+metadata:
+  name: conexao-de-sorte-metricbeat
+  namespace: elastic-system
+  labels:
+    app.kubernetes.io/name: metricbeat
+    app.kubernetes.io/part-of: conexao-de-sorte-monitoring
+spec:
+  type: metricbeat
+  version: 8.11.0
+  elasticsearchRef:
+    name: conexao-de-sorte-elasticsearch
+  config:
+    metricbeat:
+      autodiscover:
+        providers:
+        - type: kubernetes
+          scope: cluster
+          node: ${NODE_NAME}
+          unique: true
+          templates:
+          - condition:
+              contains:
+                kubernetes.labels.app.kubernetes.io/part-of: "conexao-de-sorte"
+            config:
+            - module: kubernetes
+              metricsets:
+              - container
+              - pod
+              - system
+              - volume
+              period: 10s
+              host: ${NODE_NAME}
+              hosts: ["https://${NODE_NAME}:10250"]
+              bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+              ssl.verification_mode: "none"
+              processors:
+              - add_kubernetes_metadata: ~
+    processors:
+    - add_cloud_metadata: {}
+    - add_host_metadata: {}
+    - add_kubernetes_metadata: {}
+    - add_docker_metadata: {}
+  daemonSet:
+    podTemplate:
+      metadata:
+        labels:
+          app.kubernetes.io/name: metricbeat
+          app.kubernetes.io/part-of: conexao-de-sorte-monitoring
+      spec:
+        serviceAccountName: metricbeat
+        automountServiceAccountToken: true
+        hostNetwork: true
+        dnsPolicy: ClusterFirstWithHostNet
+        containers:
+        - name: metricbeat
+          securityContext:
+            runAsUser: 0
+          resources:
+            requests:
+              memory: 200Mi
+              cpu: 100m
+            limits:
+              memory: 400Mi
+              cpu: 200m
+          volumeMounts:
+          - name: proc
+            mountPath: /hostfs/proc
+            readOnly: true
+          - name: cgroup
+            mountPath: /hostfs/sys/fs/cgroup
+            readOnly: true
+          - name: dockersock
+            mountPath: /var/run/docker.sock
+            readOnly: true
+          env:
+          - name: NODE_NAME
+            valueFrom:
+              fieldRef:
+                fieldPath: spec.nodeName
+        volumes:
+        - name: proc
+          hostPath:
+            path: /proc
+        - name: cgroup
+          hostPath:
+            path: /sys/fs/cgroup
+        - name: dockersock
+          hostPath:
+            path: /var/run/docker.sock
+
+---
+# ========================================
+# 🔐 RBAC PARA METRICBEAT
+# ========================================
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: metricbeat
+  namespace: elastic-system
+  labels:
+    app.kubernetes.io/name: metricbeat
+    app.kubernetes.io/part-of: conexao-de-sorte-monitoring
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: metricbeat
+  labels:
+    app.kubernetes.io/name: metricbeat
+    app.kubernetes.io/part-of: conexao-de-sorte-monitoring
+rules:
+- apiGroups: [""]
+  resources: ["nodes", "namespaces", "events", "pods", "services"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["extensions"]
+  resources: ["replicasets"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["apps"]
+  resources: ["statefulsets", "deployments", "replicasets"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["nodes/stats"]
+  verbs: ["get"]
+- nonResourceURLs: ["/metrics"]
+  verbs: ["get"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: metricbeat
+  labels:
+    app.kubernetes.io/name: metricbeat
+    app.kubernetes.io/part-of: conexao-de-sorte-monitoring
+subjects:
+- kind: ServiceAccount
+  name: metricbeat
+  namespace: elastic-system
+roleRef:
+  kind: ClusterRole
+  name: metricbeat
+  apiGroup: rbac.authorization.k8s.io

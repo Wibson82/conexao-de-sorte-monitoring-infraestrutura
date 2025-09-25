@@ -1,0 +1,79 @@
+# ============================================================================
+# GITIGNORE - PROJETO DE INFRAESTRUTURA CONEXÃO DE SORTE
+# ============================================================================
+
+# Logs
+*.log
+logs/
+*.log.*
+
+# Temporary files
+*.tmp
+*.temp
+.DS_Store
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Kubernetes secrets (nunca commitar)
+*secret*.yaml
+*Secret*.yaml
+*SECRET*.yaml
+
+# Backup files
+*.backup
+*.bak
+backup/
+backups/
+
+# Environment specific
+.env
+.env.local
+.env.*.local
+
+# Terraform (se usado)
+*.tfstate
+*.tfstate.*
+.terraform/
+*.tfvars
+
+# Helm (se usado)
+charts/*.tgz
+
+# Temporary Kubernetes files
+*.tmp.yaml
+*.temp.yaml
+
+# Local configuration overrides
+local-*.yaml
+override-*.yaml
+
+# Certificate files (segurança)
+*.crt
+*.key
+*.pem
+*.p12
+*.pfx
+
+# Monitoring data
+prometheus-data/
+grafana-data/
+elasticsearch-data/
+
+# Cache directories
+.cache/
+node_modules/
